@@ -1,108 +1,88 @@
 import os
-import time
-import threading
 import requests
-from flask import Flask
-from telegram import Bot, Update, BotCommand
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from flask import Flask, request
+from telegram import Bot, Update, ReplyKeyboardMarkup
+from telegram.ext import Dispatcher, CommandHandler, MessageHandler, filters
 
-# ——— Настройки ———
-TOKEN = os.getenv("TOKEN")        # теперь токен читается из переменной TOKEN
+# === Настройки ===
+TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 bot = Bot(token=TOKEN)
 app = Flask(__name__)
 
-# ——— Получение курса евро из API Альфа-Банка ———
-def get_eur_rate():
+# === Меню команд ===
+menu = ReplyKeyboardMarkup(
+    [["💶 Курс евро", "💵 Курс доллара"], ["ℹ️ Помощь"]],
+    resize_keyboard=True
+)
+
+# === Обработчики ===
+def start(update, context):
+    update.message.reply_text("Привет! Я бот AlfaBot 🤖", reply_markup=menu)
+
+def get_rate(update, context):
+    text = update.message.text
+    if "евро" in text.lower():
+        currency = "EUR"
+    elif "доллар" in text.lower():
+        currency = "USD"
+    else:
+        update.message.reply_text("Выберите валюту из меню 🙂", reply_markup=menu)
+        return
+
     try:
-        url = "https://developerhub.alfabank.by:8273/partner/1.0.1/public/rates"
-        response = requests.get(url, timeout=10)
-        data = response.json()
+        res = requests.get(f"https://api.exchangerate.host/latest?base={currency}&symbols=RUB")
+        rate = res.json()["rates"]["RUB"]
+        update.message.reply_text(f"1 {currency} = {rate:.2f} RUB 🇷🇺")
+    except Exception:
+        update.message.reply_text("Не удалось получить курс 😕")
 
-        for rate in data.get("rates", []):
-            if rate.get("sellCurrency") == "EUR" and rate.get("buyCurrency") == "BYN":
-                return float(rate["buyRate"])
-    except Exception as e:
-        print("Ошибка при получении курса:", e)
-    return None
-
-# ——— Проверка изменений курса ———
-last_rate = None
-
-def check_rate_loop():
-    global last_rate
-    while True:
-        try:
-            current = get_eur_rate()
-            if current is not None:
-                if last_rate is None:
-                    last_rate = current
-                elif abs(current - last_rate) >= 0.001:
-                    text = f"💶 Курс евро изменился!\nБыло: {last_rate:.3f}\nСтало: {current:.3f}"
-                    bot.send_message(chat_id=CHAT_ID, text=text)
-                    last_rate = current
-        except Exception as e:
-            print("Ошибка при проверке курса:", e)
-        time.sleep(60)  # проверяем раз в минуту
-
-# ——— Команды Telegram ———
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    rate = get_eur_rate()
-    if rate:
-        await update.message.reply_text(f"Бот запущен ✅\nТекущий курс евро: {rate:.3f}")
-    else:
-        await update.message.reply_text("Не удалось получить курс 😕")
-
-async def check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    rate = get_eur_rate()
-    if rate:
-        await update.message.reply_text(f"💶 Сейчас курс евро: {rate:.3f}")
-    else:
-        await update.message.reply_text("Не удалось получить курс 😕")
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "📋 Доступные команды:\n"
-        "/start — запустить бота и показать текущий курс\n"
-        "/check — проверить курс вручную\n"
-        "/help — показать справку"
+def help_command(update, context):
+    update.message.reply_text(
+        "Команды:\n"
+        "💶 Курс евро — узнать курс евро к рублю\n"
+        "💵 Курс доллара — узнать курс доллара к рублю\n"
+        "/start — открыть меню"
     )
-    await update.message.reply_text(text)
 
-# ——— Flask сервер, чтобы Render не засыпал ———
+# === Webhook Flask ===
+@app.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    dp.process_update(update)
+    return "OK"
+
 @app.route("/")
-def home():
-    return "Бот работает!"
+def index():
+    return "Бот работает ✅"
 
+# === Dispatcher ===
+from telegram.ext import Dispatcher
+dp = Dispatcher(bot, None, use_context=True)
+dp.add_handler(CommandHandler("start", start))
+dp.add_handler(CommandHandler("help", help_command))
+dp.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, get_rate))
+
+# === Установка Webhook при старте ===
+@app.before_first_request
+def set_webhook():
+    url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{TOKEN}"
+    bot.set_webhook(url)
+    print(f"Webhook установлен: {url}")
+
+# === Пинг для Render ===
+import threading, time
 def ping_self():
     while True:
         try:
-            requests.get("https://alfabot-wt8z.onrender.com")  # ⚠️ замени на свой URL, если другой
-        except:
+            requests.head(f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}")
+        except Exception:
             pass
-        time.sleep(300)  # пинг каждые 5 минут
+        time.sleep(600)
 
-# ——— Запуск бота ———
-def main():
-    threading.Thread(target=check_rate_loop, daemon=True).start()
-    threading.Thread(target=ping_self, daemon=True).start()
+threading.Thread(target=ping_self, daemon=True).start()
 
-    app_builder = ApplicationBuilder().token(TOKEN).build()
-    app_builder.add_handler(CommandHandler("start", start))
-    app_builder.add_handler(CommandHandler("check", check))
-    app_builder.add_handler(CommandHandler("help", help_command))
-
-    # Меню команд в Telegram
-    app_builder.bot.set_my_commands([
-        BotCommand("start", "Запустить бота и показать курс"),
-        BotCommand("check", "Проверить курс вручную"),
-        BotCommand("help", "Показать справку"),
-    ])
-
-    print("Бот запущен и слушает команды...")
-    app_builder.run_polling()
-
+# === Запуск ===
 if __name__ == "__main__":
-    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
-    main()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
