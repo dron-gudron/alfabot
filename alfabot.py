@@ -1,4 +1,5 @@
 import os
+import asyncio
 import requests
 import threading
 import time
@@ -82,17 +83,17 @@ application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("help", help_command))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, get_rate))
 
-# === Функция установки Webhook ===
+# === Асинхронная установка Webhook ===
+async def set_webhook_async():
+    url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{TOKEN}"
+    if url and TOKEN:
+        await application.bot.set_webhook(url)
+        print(f"✅ Webhook установлен: {url}")
+    else:
+        print("⚠️ Не удалось установить webhook — проверь переменные окружения")
+
 def set_webhook():
-    try:
-        url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{TOKEN}"
-        if url and TOKEN:
-            application.bot.set_webhook(url)
-            print(f"✅ Webhook установлен: {url}")
-        else:
-            print("⚠️ Не удалось установить webhook — проверь переменные окружения")
-    except Exception as e:
-        print(f"Ошибка установки webhook: {e}")
+    asyncio.run(set_webhook_async())
 
 # === Запуск Flask ===
 if __name__ == "__main__":
