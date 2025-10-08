@@ -13,7 +13,11 @@ CHECK_INTERVAL = 300  # Проверка каждые 5 минут (в секу�
 
 app = Flask(__name__)
 
-# Хранилище
+# === Глобальные переменные ===
+app_telegram = None
+loop = None
+
+# === Хранилище ===
 subscribed_users = set()
 last_rate = {"buy": None, "sell": None}
 
@@ -180,9 +184,13 @@ def index():
     return f"✅ Telegram bot is running<br>Subscribers: {len(subscribed_users)}<br>Last rate: Buy {last_rate['buy']}, Sell {last_rate['sell']}"
 
 @app.route("/webhook", methods=["POST"])
-async def webhook():
+def webhook():
     update = Update.de_json(request.get_json(force=True), app_telegram.bot)
-    await app_telegram.process_update(update)
+    # Запускаем обработку в event loop
+    asyncio.run_coroutine_threadsafe(
+        app_telegram.process_update(update),
+        loop
+    )
     return "OK", 200
 
 # === Запуск ===
@@ -203,6 +211,7 @@ if __name__ == "__main__":
     flask_thread.start()
     
     # Бесконечный цикл для поддержания работы
+    print("✅ Бот запущен и работает!")
     try:
         loop.run_forever()
     except KeyboardInterrupt:
