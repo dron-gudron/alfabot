@@ -1,84 +1,92 @@
+import os
+import asyncio
+import logging
+import requests
+from bs4 import BeautifulSoup
 from flask import Flask, request
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
-import requests
-import asyncio
-import os
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
 
-TOKEN = os.getenv("TOKEN") or "ВАШ_ТОКЕН_БОТА"
-WEBHOOK_URL = f"https://alfabot-wt8z.onrender.com/{TOKEN}"
+# =======================
+# 🔧 Настройки
+# =======================
+TOKEN = os.getenv("TOKEN") or "ТВОЙ_ТОКЕН_БОТА"
+WEBHOOK_PATH = f"/{TOKEN}"
+WEBHOOK_URL = f"https://alfabot-wt8z.onrender.com{WEBHOOK_PATH}"
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# === Получение курса евро с сайта Альфа-Банка ===
+# =======================
+# 🧠 Функция парсинга курса
+# =======================
 def get_eur_rate():
+    url = "https://www.alfabank.by/exchange/digital/"
     try:
-        url = "https://www.alfabank.by/api/exchange-rates/public/digital"
-        r = requests.get(url, timeout=5)
-        r.raise_for_status()
-        data = r.json()
-
-        # ищем евро в списке
-        for item in data:
-            if item["sellCurrency"] == "EUR" and item["buyCurrency"] == "BYN":
-                rate_buy = item["buyRate"]
-                rate_sell = item["sellRate"]
-                return rate_buy, rate_sell
-
-        return None
+        r = requests.get(url, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
+        # ищем элемент с EUR
+        row = soup.find("div", text="EUR").find_parent("div", class_="currency-item")
+        buy = row.find_all("span", class_="rate")[0].text.strip()
+        sell = row.find_all("span", class_="rate")[1].text.strip()
+        return f"💶 Курс евро:\nПокупка: {buy}\nПродажа: {sell}"
     except Exception as e:
-        print(f"Ошибка при получении курса: {e}")
-        return None
+        logging.error(f"Ошибка при получении курса: {e}")
+        return "Не удалось получить курс 😕"
 
-# === Обработчики команд ===
+# =======================
+# 🤖 Обработчики команд
+# =======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [["Курс евро 💶"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(
-        "Привет! 👋\nЯ показываю курс евро по данным Альфа-Банка Беларусь.\nВыбери команду в меню ниже:",
-        reply_markup=reply_markup
+        "Привет! 👋\nЯ показываю текущий курс евро.\nВыбери команду в меню ниже:",
+        reply_markup=markup
     )
 
-async def eur_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    rate = get_eur_rate()
-    if rate:
-        buy, sell = rate
-        await update.message.reply_text(
-            f"💶 Курс евро по Альфа-Банку:\n\nПокупка: {buy:.2f} BYN\nПродажа: {sell:.2f} BYN"
-        )
-    else:
-        await update.message.reply_text("Не удалось получить курс с сайта Альфа-Банка 😔")
+async def euro_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = get_eur_rate()
+    await update.message.reply_text(text)
 
-# === Инициализация бота ===
+# =======================
+# 🚀 Инициализация Telegram приложения
+# =======================
 async def setup_bot():
     app_telegram = Application.builder().token(TOKEN).build()
-    app_telegram.add_handler(CommandHandler("start", start))
-    app_telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, eur_rate))
 
-    # Устанавливаем вебхук
+    app_telegram.add_handler(CommandHandler("start", start))
+    app_telegram.add_handler(MessageHandler(filters.Regex("Курс евро"), euro_rate))
+
+    await app_telegram.initialize()
     await app_telegram.bot.set_webhook(WEBHOOK_URL)
-    print(f"✅ Webhook установлен: {WEBHOOK_URL}")
+    logging.info(f"✅ Webhook установлен: {WEBHOOK_URL}")
+
     return app_telegram
 
-# === Flask webhook ===
-telegram_app = None
+telegram_app = asyncio.run(setup_bot())
 
-@app.route(f"/{TOKEN}", methods=["POST"])
+# =======================
+# 🌐 Flask webhook
+# =======================
+@app.route(WEBHOOK_PATH, methods=["POST"])
 def telegram_webhook():
-    global telegram_app
-    if telegram_app is None:
-        return "Bot not initialized", 500
-
     update = Update.de_json(request.get_json(force=True), telegram_app.bot)
     asyncio.run(telegram_app.process_update(update))
     return "ok", 200
 
 @app.route("/")
-def home():
-    return "Бот работает!"
+def index():
+    return "АльфаБот работает!", 200
 
+# =======================
+# 🏁 Запуск Flask
+# =======================
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    telegram_app = loop.run_until_complete(setup_bot())
     app.run(host="0.0.0.0", port=10000)
-
