@@ -87,6 +87,7 @@ def run_telegram():
     asyncio.set_event_loop(loop)
 
     async def run():
+        await application.initialize()
         await bot.set_webhook(WEBHOOK_URL)
         print(f"✅ Webhook установлен: {WEBHOOK_URL}")
         await application.start()
