@@ -1,103 +1,83 @@
-import os
-import threading
-import time
-import requests
 from flask import Flask, request
-from telegram import Update, Bot, KeyboardButton, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+import requests
+import asyncio
+import os
 
-# --- Настройки ---
-TOKEN = os.getenv("TOKEN")
+TOKEN = os.getenv("BOT_TOKEN") or "ВАШ_ТОКЕН_БОТА"
 WEBHOOK_URL = f"https://alfabot-wt8z.onrender.com/{TOKEN}"
 
 app = Flask(__name__)
 
-# --- Телеграм бот ---
-bot = Bot(token=TOKEN)
-application = Application.builder().token(TOKEN).build()
-
-
-# --- Получение курса евро ---
+# === Получение курса евро с сайта Альфа-Банка ===
 def get_eur_rate():
     try:
-        r = requests.get("https://api.exchangerate.host/latest?base=EUR&symbols=USD,RUB")
+        url = "https://www.alfabank.by/api/exchange-rates/public/digital"
+        r = requests.get(url, timeout=5)
+        r.raise_for_status()
         data = r.json()
-        eur_usd = data["rates"]["USD"]
-        eur_rub = data["rates"]["RUB"]
-        return f"💶 1 EUR = {eur_usd:.2f} USD\n💶 1 EUR = {eur_rub:.2f} RUB"
+
+        # ищем евро в списке
+        for item in data:
+            if item["sellCurrency"] == "EUR" and item["buyCurrency"] == "BYN":
+                rate_buy = item["buyRate"]
+                rate_sell = item["sellRate"]
+                return rate_buy, rate_sell
+
+        return None
     except Exception as e:
-        print("Ошибка при получении курса:", e)
-        return "Не удалось получить курс 😕"
+        print(f"Ошибка при получении курса: {e}")
+        return None
 
-
-# --- Команды ---
+# === Обработчики команд ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [KeyboardButton("💶 Курс евро")],
-        [KeyboardButton("ℹ️ Помощь")]
-    ]
+    keyboard = [["Курс евро 💶"]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(
-        "Привет! 👋\nЯ показываю текущий курс евро.\nВыбери команду в меню ниже:",
+        "Привет! 👋\nЯ показываю курс евро по данным Альфа-Банка Беларусь.\nВыбери команду в меню ниже:",
         reply_markup=reply_markup
     )
 
 async def eur_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = get_eur_rate()
-    await update.message.reply_text(text)
+    rate = get_eur_rate()
+    if rate:
+        buy, sell = rate
+        await update.message.reply_text(
+            f"💶 Курс евро по Альфа-Банку:\n\nПокупка: {buy:.2f} BYN\nПродажа: {sell:.2f} BYN"
+        )
+    else:
+        await update.message.reply_text("Не удалось получить курс с сайта Альфа-Банка 😔")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Используй кнопки ниже, чтобы узнать курс евро 💶")
+# === Инициализация бота ===
+async def setup_bot():
+    app_telegram = Application.builder().token(TOKEN).build()
+    app_telegram.add_handler(CommandHandler("start", start))
+    app_telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, eur_rate))
 
+    # Устанавливаем вебхук
+    await app_telegram.bot.set_webhook(WEBHOOK_URL)
+    print(f"✅ Webhook установлен: {WEBHOOK_URL}")
+    return app_telegram
 
-# --- Обработчики ---
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("help", help_command))
-application.add_handler(MessageHandler(filters.TEXT & filters.Regex("курс евро"), eur_rate))
-application.add_handler(MessageHandler(filters.TEXT & filters.Regex("помощь"), help_command))
+# === Flask webhook ===
+telegram_app = None
 
-
-# --- Flask webhook ---
 @app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    application.create_task(application.process_update(update))
-    return "ok", 200
+def telegram_webhook():
+    global telegram_app
+    if telegram_app is None:
+        return "Bot not initialized", 500
 
+    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+    asyncio.run(telegram_app.process_update(update))
+    return "ok", 200
 
 @app.route("/")
 def home():
-    return "Бот работает ✅", 200
-
-
-# --- Самопинг, чтобы Render не засыпал ---
-def ping_self():
-    while True:
-        try:
-            requests.head("https://alfabot-wt8z.onrender.com/")
-        except:
-            pass
-        time.sleep(600)  # каждые 10 минут
-
-
-# --- Фоновый запуск Telegram ---
-def run_telegram():
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    async def run():
-        await application.initialize()
-        await bot.set_webhook(WEBHOOK_URL)
-        print(f"✅ Webhook установлен: {WEBHOOK_URL}")
-        await application.start()
-        await application.updater.start_polling()
-        await asyncio.Event().wait()  # держим loop живым
-
-    loop.run_until_complete(run())
-
+    return "Бот работает!"
 
 if __name__ == "__main__":
-    threading.Thread(target=ping_self, daemon=True).start()
-    threading.Thread(target=run_telegram, daemon=True).start()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    loop = asyncio.get_event_loop()
+    telegram_app = loop.run_until_complete(setup_bot())
+    app.run(host="0.0.0.0", port=10000)
