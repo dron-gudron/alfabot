@@ -146,19 +146,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• Отписаться"
         )
 
+# === Фоновая задача проверки курса ===
+async def background_rate_checker(app_telegram):
+    """Фоновая задача для проверки курса"""
+    await asyncio.sleep(10)  # Ждем 10 секунд перед первой проверкой
+    
+    while True:
+        try:
+            # Создаем контекст для отправки сообщений
+            context = ContextTypes.DEFAULT_TYPE(application=app_telegram)
+            await check_rate_changes(context)
+        except Exception as e:
+            print(f"Ошибка в фоновой проверке: {e}")
+        
+        await asyncio.sleep(CHECK_INTERVAL)
+
 # === Настройка Telegram-приложения ===
 async def setup_bot():
     app_telegram = Application.builder().token(TOKEN).build()
     
     app_telegram.add_handler(CommandHandler("start", start))
     app_telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # Запускаем периодическую проверку курса
-    app_telegram.job_queue.run_repeating(
-        check_rate_changes,
-        interval=CHECK_INTERVAL,
-        first=10  # Первая проверка через 10 секунд после запуска
-    )
     
     await app_telegram.bot.set_webhook(WEBHOOK_URL)
     print(f"Webhook установлен: {WEBHOOK_URL}")
@@ -184,6 +192,9 @@ if __name__ == "__main__":
     
     app_telegram = loop.run_until_complete(setup_bot())
     
+    # Запуск фоновой проверки курса
+    asyncio.ensure_future(background_rate_checker(app_telegram), loop=loop)
+    
     # Запуск Flask в отдельном потоке
     def run_flask():
         app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
@@ -191,12 +202,8 @@ if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
-    # Запуск job_queue для фоновых задач
-    async def run_pending_jobs():
-        while True:
-            await asyncio.sleep(1)
-    
+    # Бесконечный цикл для поддержания работы
     try:
-        loop.run_until_complete(run_pending_jobs())
+        loop.run_forever()
     except KeyboardInterrupt:
         print("Остановка бота...")
