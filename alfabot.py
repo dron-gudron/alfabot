@@ -4,7 +4,7 @@ import threading
 import requests
 from flask import Flask, request
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 # === Конфигурация ===
 TOKEN = os.getenv("TOKEN")  # твой токен телеграм-бота
@@ -43,9 +43,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def get_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    rate_message = get_exchange_rate()
-    await update.message.reply_text(rate_message)
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.lower()
+    if "евро" in text:
+        rate_message = get_exchange_rate()
+        await update.message.reply_text(rate_message)
+    else:
+        await update.message.reply_text("Я понимаю только команду 'Курс евро' 😊")
 
 
 # === Настройка Telegram-приложения ===
@@ -53,14 +57,9 @@ async def setup_bot():
     app_telegram = Application.builder().token(TOKEN).build()
 
     app_telegram.add_handler(CommandHandler("start", start))
+    app_telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Обработка нажатия на кнопку "Курс евро"
-    app_telegram.add_handler(CommandHandler("rate", get_rate))
-    app_telegram.add_handler(CommandHandler("курс", get_rate))
-
-    # Регистрируем Webhook
     await app_telegram.bot.set_webhook(WEBHOOK_URL)
-
     return app_telegram
 
 
