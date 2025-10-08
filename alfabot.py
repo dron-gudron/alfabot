@@ -5,7 +5,7 @@ import requests
 import asyncio
 import os
 
-TOKEN = os.getenv("BOT_TOKEN") or "ВАШ_ТОКЕН_БОТА"
+TOKEN = os.getenv("TOKEN") or "ВАШ_ТОКЕН_БОТА"
 WEBHOOK_URL = f"https://alfabot-wt8z.onrender.com/{TOKEN}"
 
 app = Flask(__name__)
@@ -81,3 +81,4 @@ if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     telegram_app = loop.run_until_complete(setup_bot())
     app.run(host="0.0.0.0", port=10000)
+
