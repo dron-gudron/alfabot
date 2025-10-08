@@ -2,29 +2,32 @@ import os
 import time
 import threading
 import requests
-from bs4 import BeautifulSoup
 from flask import Flask
 from telegram import Bot, Update, BotCommand
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-TOKEN = os.getenv("TOKEN")
+# ——— Настройки ———
+TOKEN = os.getenv("TOKEN")        # теперь токен читается из переменной TOKEN
 CHAT_ID = os.getenv("CHAT_ID")
 
 bot = Bot(token=TOKEN)
 app = Flask(__name__)
 
-# ——— Получение курса евро ———
+# ——— Получение курса евро из API Альфа-Банка ———
 def get_eur_rate():
-    url = "https://www.alfabank.by/exchange/digital/"
-    response = requests.get(url)
-    soup = BeautifulSoup(response.text, "html.parser")
-    eur_block = soup.find("div", {"class": "exchange-currency", "data-currency": "EUR"})
-    if eur_block:
-        rate = eur_block.find("span", {"class": "rate-value"}).text.strip()
-        return float(rate.replace(",", "."))
+    try:
+        url = "https://developerhub.alfabank.by:8273/partner/1.0.1/public/rates"
+        response = requests.get(url, timeout=10)
+        data = response.json()
+
+        for rate in data.get("rates", []):
+            if rate.get("sellCurrency") == "EUR" and rate.get("buyCurrency") == "BYN":
+                return float(rate["buyRate"])
+    except Exception as e:
+        print("Ошибка при получении курса:", e)
     return None
 
-# ——— Основной цикл проверки курса ———
+# ——— Проверка изменений курса ———
 last_rate = None
 
 def check_rate_loop():
@@ -41,7 +44,7 @@ def check_rate_loop():
                     last_rate = current
         except Exception as e:
             print("Ошибка при проверке курса:", e)
-        time.sleep(60)
+        time.sleep(60)  # проверяем раз в минуту
 
 # ——— Команды Telegram ———
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,11 +66,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📋 Доступные команды:\n"
         "/start — запустить бота и показать текущий курс\n"
         "/check — проверить курс вручную\n"
-        "/help — показать это сообщение"
+        "/help — показать справку"
     )
     await update.message.reply_text(text)
 
-# ——— Flask, чтобы Render не засыпал ———
+# ——— Flask сервер, чтобы Render не засыпал ———
 @app.route("/")
 def home():
     return "Бот работает!"
@@ -75,10 +78,10 @@ def home():
 def ping_self():
     while True:
         try:
-            requests.get("https://alfabot-wt8z.onrender.com")  # ← замени на свой URL!
+            requests.get("https://alfabot-wt8z.onrender.com")  # ⚠️ замени на свой URL, если другой
         except:
             pass
-        time.sleep(300)
+        time.sleep(300)  # пинг каждые 5 минут
 
 # ——— Запуск бота ———
 def main():
@@ -90,7 +93,7 @@ def main():
     app_builder.add_handler(CommandHandler("check", check))
     app_builder.add_handler(CommandHandler("help", help_command))
 
-    # ——— Добавляем меню команд ———
+    # Меню команд в Telegram
     app_builder.bot.set_my_commands([
         BotCommand("start", "Запустить бота и показать курс"),
         BotCommand("check", "Проверить курс вручную"),
@@ -103,4 +106,3 @@ def main():
 if __name__ == "__main__":
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=10000), daemon=True).start()
     main()
-
