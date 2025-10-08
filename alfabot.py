@@ -3,15 +3,12 @@ import time
 import threading
 from bs4 import BeautifulSoup
 from flask import Flask
-from telegram import Bot
 import os
 
 # === Настройки окружения ===
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
-
-bot = Bot(token=TOKEN)
 
 # === Flask-сервер, чтобы Render не "усыпил" ===
 app = Flask(__name__)
@@ -46,13 +43,12 @@ def get_euro_rate():
         soup = BeautifulSoup(response.text, "html.parser")
 
         # Ищем строку с EUR
-        row = soup.find("div", {"class": "rate-tabs__content"})
-        euro_row = row.find("div", string=lambda text: text and "EUR" in text)
-        if not euro_row:
+        rate_block = soup.find(string="EUR")
+        if not rate_block:
             return None
 
         # Находим соседний элемент с курсом покупки
-        rate_element = euro_row.find_next("span", {"class": "index-rate"})
+        rate_element = rate_block.find_next("span", {"class": "index-rate"})
         if not rate_element:
             return None
 
@@ -64,9 +60,11 @@ def get_euro_rate():
 
 
 def send_message(text):
-    """Отправляет сообщение в Telegram."""
+    """Отправляет сообщение в Telegram через обычный запрос."""
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    data = {"chat_id": CHAT_ID, "text": text}
     try:
-        bot.send_message(chat_id=CHAT_ID, text=text)
+        requests.post(url, data=data)
     except Exception as e:
         print("Ошибка при отправке сообщения:", e)
 
