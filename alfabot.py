@@ -82,13 +82,20 @@ application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("help", help_command))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, get_rate))
 
-# === Установка webhook при запуске ===
-@app.before_first_request
+# === Функция установки Webhook ===
 def set_webhook():
-    url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{TOKEN}"
-    print(f"Webhook устанавливается: {url}")
-    application.bot.set_webhook(url)
+    try:
+        url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/{TOKEN}"
+        if url and TOKEN:
+            application.bot.set_webhook(url)
+            print(f"✅ Webhook установлен: {url}")
+        else:
+            print("⚠️ Не удалось установить webhook — проверь переменные окружения")
+    except Exception as e:
+        print(f"Ошибка установки webhook: {e}")
 
 # === Запуск Flask ===
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    set_webhook()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
