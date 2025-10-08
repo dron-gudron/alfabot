@@ -1,126 +1,94 @@
-import asyncio
-import aiohttp
-from aiohttp import web
+import requests
+import time
+import threading
 from bs4 import BeautifulSoup
-from aiogram import Bot, Dispatcher
-from aiogram.filters import Command
-from aiogram.types import Message
+from flask import Flask
+from telegram import Bot
 import os
 
-# === НАСТРОЙКИ ===
-TOKEN = os.getenv("TOKEN") or "ВАШ_TELEGRAM_TOKEN"
-CHAT_ID = os.getenv("CHAT_ID") or "ВАШ_CHAT_ID"
-CHECK_INTERVAL = 600  # проверка курса (секунд)
-PING_INTERVAL = 300   # пинг (секунд)
-URL = "https://www.alfabank.by/exchange/digital/"
+# === Настройки окружения ===
+TOKEN = os.getenv("TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 
 bot = Bot(token=TOKEN)
-dp = Dispatcher()
-last_buy, last_sell = None, None
+
+# === Flask-сервер, чтобы Render не "усыпил" ===
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running"
 
 
-async def get_eur_rate():
-    """Парсит курс евро с сайта Альфа-Банка"""
-    async with aiohttp.ClientSession() as session:
-        async with session.get(URL) as resp:
-            html = await resp.text()
-    soup = BeautifulSoup(html, "lxml")
-
-    eur_block = soup.find("div", {"data-currency": "EUR"})
-    if not eur_block:
-        return None, None
-
-    buy_span = eur_block.find("span", class_="rate__value--buy")
-    sell_span = eur_block.find("span", class_="rate__value--sell")
-    if not buy_span or not sell_span:
-        return None, None
-
-    buy = float(buy_span.text.strip().replace(",", "."))
-    sell = float(sell_span.text.strip().replace(",", "."))
-    return buy, sell
+def run_flask():
+    """Запускает мини-сервер на Render."""
+    app.run(host="0.0.0.0", port=10000)
 
 
-async def check_rate():
-    """Проверяет курс и уведомляет при изменениях"""
-    global last_buy, last_sell
+def ping_self():
+    """Регулярно пингует сам себя, чтобы Render не уснул."""
     while True:
         try:
-            buy, sell = await get_eur_rate()
-            if buy and sell:
-                if last_buy is not None and (buy != last_buy or sell != last_sell):
-                    text = (
-                        f"💶 Курс евро изменился!\n\n"
-                        f"Покупка: {buy:.4f}\nПродажа: {sell:.4f}"
-                    )
-                    await bot.send_message(CHAT_ID, text)
-                last_buy, last_sell = buy, sell
-            else:
-                print("⚠️ Не удалось получить курс евро")
-        except Exception as e:
-            print("Ошибка при проверке:", e)
-        await asyncio.sleep(CHECK_INTERVAL)
+            if RENDER_EXTERNAL_URL:
+                requests.get(RENDER_EXTERNAL_URL)
+        except Exception:
+            pass
+        time.sleep(300)  # каждые 5 минут
 
 
-async def ping_self():
-    """Пингует сам себя, чтобы Render не "усыпил""""
-    url = os.getenv("RENDER_EXTERNAL_URL")
-    if not url:
-        print("⚠️ Переменная RENDER_EXTERNAL_URL не задана (ping отключен)")
-        return
+# === Основная логика бота ===
+def get_euro_rate():
+    """Парсит курс евро с сайта Альфа-Банка."""
+    url = "https://www.alfabank.by/exchange/digital/"
+    try:
+        response = requests.get(url, timeout=10)
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        # Ищем строку с EUR
+        row = soup.find("div", {"class": "rate-tabs__content"})
+        euro_row = row.find("div", string=lambda text: text and "EUR" in text)
+        if not euro_row:
+            return None
+
+        # Находим соседний элемент с курсом покупки
+        rate_element = euro_row.find_next("span", {"class": "index-rate"})
+        if not rate_element:
+            return None
+
+        rate = float(rate_element.text.replace(",", "."))
+        return rate
+    except Exception as e:
+        print("Ошибка при получении курса:", e)
+        return None
+
+
+def send_message(text):
+    """Отправляет сообщение в Telegram."""
+    try:
+        bot.send_message(chat_id=CHAT_ID, text=text)
+    except Exception as e:
+        print("Ошибка при отправке сообщения:", e)
+
+
+def main():
+    """Основной цикл проверки курса."""
+    last_rate = None
+    send_message("Бот запущен ✅\nПроверяю курс евро...")
 
     while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                await session.get(url)
-                print("✅ Пинг отправлен Render")
-        except Exception as e:
-            print("Ошибка пинга:", e)
-        await asyncio.sleep(PING_INTERVAL)
+        rate = get_euro_rate()
+        if rate is not None:
+            if last_rate is None:
+                send_message(f"Текущий курс евро: {rate} BYN")
+            elif rate != last_rate:
+                send_message(f"Курс евро изменился!\nБыло: {last_rate} → Стало: {rate} BYN")
+            last_rate = rate
+        time.sleep(300)  # проверка каждые 5 минут
 
 
-@dp.message(Command("start"))
-async def cmd_start(message: Message):
-    """Команда /start — приветствие + показ текущего курса"""
-    buy, sell = await get_eur_rate()
-    if buy and sell:
-        text = (
-            f"✅ Бот запущен и отслеживает курс евро на сайте Альфа-Банка.\n\n"
-            f"💶 Текущий курс:\n"
-            f"Покупка: {buy:.4f}\nПродажа: {sell:.4f}"
-        )
-    else:
-        text = "⚠️ Не удалось получить курс евро, попробуй позже."
-
-    await message.answer(text)
-    asyncio.create_task(check_rate())
-
-
-async def on_startup():
-    """Запуск фоновых задач"""
-    asyncio.create_task(ping_self())
-    print("🚀 Бот запущен!")
-
-
-async def main():
-    await on_startup()
-    await dp.start_polling(bot)
-
-
-# === HTTP-сервер для Render ===
-# (Render требует открытый порт, иначе процесс “уснёт”)
-async def handle(request):
-    return web.Response(text="Bot is alive")
-
-async def run_webserver():
-    app = web.Application()
-    app.add_routes([web.get("/", handle)])
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 10000)))
-    await site.start()
-    print("🌐 Веб-сервер запущен на порту", os.getenv("PORT", 10000))
-
+# === Запуск всех потоков ===
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(run_webserver())
-    loop.run_until_complete(main())
+    threading.Thread(target=run_flask).start()
+    threading.Thread(target=ping_self).start()
+    main()
