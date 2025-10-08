@@ -1,92 +1,88 @@
 import os
 import asyncio
-import logging
+import threading
 import requests
-from bs4 import BeautifulSoup
 from flask import Flask, request
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
-)
+from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-# =======================
-# 🔧 Настройки
-# =======================
-TOKEN = os.getenv("TOKEN") or "ТВОЙ_ТОКЕН_БОТА"
-WEBHOOK_PATH = f"/{TOKEN}"
-WEBHOOK_URL = f"https://alfabot-wt8z.onrender.com{WEBHOOK_PATH}"
+# === Конфигурация ===
+TOKEN = os.getenv("TOKEN")  # твой токен телеграм-бота
+WEBHOOK_URL = "https://alfabot-wt8z.onrender.com/webhook"  # твой Render URL + /webhook
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
 
-# =======================
-# 🧠 Функция парсинга курса
-# =======================
-def get_eur_rate():
-    url = "https://www.alfabank.by/exchange/digital/"
+# === Функция получения курса евро ===
+def get_exchange_rate():
     try:
-        r = requests.get(url, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
-        # ищем элемент с EUR
-        row = soup.find("div", text="EUR").find_parent("div", class_="currency-item")
-        buy = row.find_all("span", class_="rate")[0].text.strip()
-        sell = row.find_all("span", class_="rate")[1].text.strip()
-        return f"💶 Курс евро:\nПокупка: {buy}\nПродажа: {sell}"
+        url = "https://www.alfabank.by/api/v1/exchange-rates/rates/?currencyCode=978&rateType=cash"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        rate = data["rates"][0]
+        buy = rate["buyRate"]
+        sell = rate["sellRate"]
+
+        return f"💶 Курс евро в Альфа-Банке (наличный):\nПокупка: {buy} BYN\nПродажа: {sell} BYN"
     except Exception as e:
-        logging.error(f"Ошибка при получении курса: {e}")
+        print(f"Ошибка получения курса: {e}")
         return "Не удалось получить курс 😕"
 
-# =======================
-# 🤖 Обработчики команд
-# =======================
+
+# === Хэндлеры команд ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [["Курс евро 💶"]]
-    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    keyboard = [
+        [KeyboardButton("Курс евро")],
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
     await update.message.reply_text(
         "Привет! 👋\nЯ показываю текущий курс евро.\nВыбери команду в меню ниже:",
-        reply_markup=markup
+        reply_markup=reply_markup,
     )
 
-async def euro_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = get_eur_rate()
-    await update.message.reply_text(text)
 
-# =======================
-# 🚀 Инициализация Telegram приложения
-# =======================
+async def get_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    rate_message = get_exchange_rate()
+    await update.message.reply_text(rate_message)
+
+
+# === Настройка Telegram-приложения ===
 async def setup_bot():
     app_telegram = Application.builder().token(TOKEN).build()
 
     app_telegram.add_handler(CommandHandler("start", start))
-    app_telegram.add_handler(MessageHandler(filters.Regex("Курс евро"), euro_rate))
 
-    await app_telegram.initialize()
+    # Обработка нажатия на кнопку "Курс евро"
+    app_telegram.add_handler(CommandHandler("rate", get_rate))
+    app_telegram.add_handler(CommandHandler("курс", get_rate))
+
+    # Регистрируем Webhook
     await app_telegram.bot.set_webhook(WEBHOOK_URL)
-    logging.info(f"✅ Webhook установлен: {WEBHOOK_URL}")
 
     return app_telegram
 
-telegram_app = asyncio.run(setup_bot())
 
-# =======================
-# 🌐 Flask webhook
-# =======================
-@app.route(WEBHOOK_PATH, methods=["POST"])
-def telegram_webhook():
-    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    asyncio.run(telegram_app.process_update(update))
-    return "ok", 200
-
+# === Flask-маршруты ===
 @app.route("/")
 def index():
-    return "АльфаБот работает!", 200
+    return "✅ Telegram bot is running"
 
-# =======================
-# 🏁 Запуск Flask
-# =======================
+
+@app.route("/webhook", methods=["POST"])
+async def webhook():
+    update = Update.de_json(request.get_json(force=True), app_telegram.bot)
+    await app_telegram.process_update(update)
+    return "OK", 200
+
+
+# === Запуск ===
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    loop = asyncio.get_event_loop()
+    app_telegram = loop.run_until_complete(setup_bot())
+
+    def run_flask():
+        app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
+    threading.Thread(target=run_flask).start()
